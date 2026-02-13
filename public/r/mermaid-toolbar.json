@@ -1,0 +1,21 @@
+{
+  "$schema": "https://ui.shadcn.com/schema/registry-item.json",
+  "name": "mermaid-toolbar",
+  "type": "registry:component",
+  "title": "Mermaid Toolbar",
+  "description": "Toolbar with theme, curve, font size, template selector, and view mode toggle for the Mermaid playground.",
+  "dependencies": ["lucide-react"],
+  "registryDependencies": ["button", "select", "mermaid"],
+  "files": [
+    {
+      "path": "components/mermaidcn/mermaid-toolbar.tsx",
+      "type": "registry:component",
+      "target": "components/mermaidcn/mermaid-toolbar.tsx"
+    },
+    {
+      "path": "lib/diagram-templates.ts",
+      "type": "registry:lib",
+      "target": "lib/diagram-templates.ts"
+    }
+  ]
+}

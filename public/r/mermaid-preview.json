@@ -1,0 +1,16 @@
+{
+  "$schema": "https://ui.shadcn.com/schema/registry-item.json",
+  "name": "mermaid-preview",
+  "type": "registry:component",
+  "title": "Mermaid Preview",
+  "description": "Preview panel for Mermaid diagrams with zoom controls and SVG/PNG export.",
+  "dependencies": ["lucide-react"],
+  "registryDependencies": ["button", "mermaid-controls"],
+  "files": [
+    {
+      "path": "components/mermaidcn/mermaid-preview.tsx",
+      "type": "registry:component",
+      "target": "components/mermaidcn/mermaid-preview.tsx"
+    }
+  ]
+}

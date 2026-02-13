@@ -1,0 +1,16 @@
+{
+  "$schema": "https://ui.shadcn.com/schema/registry-item.json",
+  "name": "mermaid-controls",
+  "type": "registry:component",
+  "title": "Mermaid Controls",
+  "description": "Zoom and pan controls wrapper for Mermaid diagrams. Supports scroll-to-zoom, click-drag pan, and pinch-to-zoom.",
+  "dependencies": ["mermaid"],
+  "registryDependencies": ["mermaid"],
+  "files": [
+    {
+      "path": "components/mermaidcn/mermaid-controls.tsx",
+      "type": "registry:component",
+      "target": "components/mermaidcn/mermaid-controls.tsx"
+    }
+  ]
+}

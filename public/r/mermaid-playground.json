@@ -1,0 +1,21 @@
+{
+  "$schema": "https://ui.shadcn.com/schema/registry-item.json",
+  "name": "mermaid-playground",
+  "type": "registry:component",
+  "title": "Mermaid Playground",
+  "description": "A full-featured playground with editor, live preview, theme controls, zoom/pan, and export options for Mermaid diagrams.",
+  "dependencies": ["mermaid", "lucide-react"],
+  "registryDependencies": ["button", "select", "mermaid", "mermaid-controls", "mermaid-editor", "mermaid-toolbar", "mermaid-preview"],
+  "files": [
+    {
+      "path": "components/mermaidcn/mermaid-playground.tsx",
+      "type": "registry:component",
+      "target": "components/mermaidcn/mermaid-playground.tsx"
+    },
+    {
+      "path": "lib/diagram-templates.ts",
+      "type": "registry:lib",
+      "target": "lib/diagram-templates.ts"
+    }
+  ]
+}
