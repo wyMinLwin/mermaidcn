@@ -3,6 +3,9 @@
   "name": "zoom-pan",
   "title": "ZoomPan",
   "description": "A generic zoom and pan wrapper for any React content. Supports scroll-to-zoom, click-drag pan, and pinch-to-zoom.",
+  "dependencies": [
+    "lucide-react"
+  ],
   "files": [
     {
       "path": "components/zoom-pan.tsx",
