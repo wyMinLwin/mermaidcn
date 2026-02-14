@@ -675,7 +675,7 @@ function ZoomPanDemo() {
     <ZoomPan
       imageSrc={imageSrc}
       className="h-[350px] w-full"
-      controls={({ zoomIn, zoomOut, resetZoom, scalePercent }) => (
+      controls={({ zoomIn, zoomOut, resetZoom, centerView, scalePercent }) => (
         <div className="border-border flex items-center gap-1 border-b px-3 py-1.5">
           <Button
             variant="ghost"
@@ -701,11 +701,12 @@ function ZoomPanDemo() {
             <ZoomInIcon className="h-3.5 w-3.5" />
             <span className="sr-only">Zoom in</span>
           </Button>
+
           <Button
             variant="ghost"
             size="icon"
             className="h-7 w-7"
-            onClick={resetZoom}
+            onClick={centerView}
           >
             <LocateFixedIcon className="h-3.5 w-3.5" />
             <span className="sr-only">Reset zoom</span>
