@@ -1,4 +1,5 @@
 "use client";
+import * as React from "react";
 import { Mermaid, type MermaidConfig } from "@/components/mermaid";
 import { ZoomPan } from "@/components/zoom-pan";
 import { Button } from "@/components/ui/button";
@@ -78,8 +79,22 @@ export function MermaidPreview({
     img.src = url;
   };
 
+  const [imageSrc, setImageSrc] = React.useState<string>("");
+
+  React.useEffect(() => {
+    if (!svgOutput) {
+      setImageSrc("");
+      return;
+    }
+    const blob = new Blob([svgOutput], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    setImageSrc(url);
+    return () => URL.revokeObjectURL(url);
+  }, [svgOutput]);
+
   return (
     <ZoomPan
+      imageSrc={imageSrc}
       className={cn("min-h-0", className)}
       controls={({ zoomIn, zoomOut, resetZoom, centerView, scalePercent }) => (
         <div className="bg-muted/50 border-border flex items-center justify-between border-b px-3 py-1.5">

@@ -19,6 +19,7 @@ import {
   LocateFixedIcon,
 } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { useTheme } from "next-themes";
 
 const mermaidProps = [
   {
@@ -59,10 +60,22 @@ const mermaidProps = [
 
 const zoomPanProps = [
   {
+    name: "imageSrc",
+    type: "string",
+    description:
+      "The source URL or Data URL of the image to render on the canvas.",
+    required: true,
+  },
+  {
+    name: "onLoad",
+    type: "() => void",
+    description: "Callback fired when the image successfully loads.",
+  },
+  {
     name: "children",
     type: "React.ReactNode",
-    description: "Content to render inside the zoomable, pannable canvas.",
-    required: true,
+    description:
+      "Optional content rendered in a hidden container (useful for lifecycle management).",
   },
   {
     name: "controls",
@@ -112,6 +125,50 @@ const zoomPanProps = [
   },
 ];
 
+const playgroundProps = [
+  {
+    name: "defaultValue",
+    type: "string",
+    description: "Initial Mermaid diagram code for the editor.",
+  },
+  {
+    name: "className",
+    type: "string",
+    description: "Additional CSS classes for the container.",
+  },
+];
+
+const previewProps = [
+  {
+    name: "chart",
+    type: "string",
+    description: "The Mermaid diagram definition string.",
+    required: true,
+  },
+  {
+    name: "config",
+    type: "MermaidConfig",
+    description: "Configuration object for rendering.",
+  },
+  {
+    name: "svgOutput",
+    type: "string",
+    description: "The rendered SVG string (controlled state).",
+    required: true,
+  },
+  {
+    name: "onSvgOutputChange",
+    type: "(svg: string) => void",
+    description: "Callback called when the SVG is successfully rendered.",
+    required: true,
+  },
+  {
+    name: "className",
+    type: "string",
+    description: "Additional CSS classes for the preview wrapper.",
+  },
+];
+
 const BASIC_EXAMPLE = `import { Mermaid } from "@/components/mermaidcn/mermaid"
 
 export function MyDiagram() {
@@ -147,8 +204,18 @@ const ZOOM_EXAMPLE = `import { Mermaid } from "@/components/mermaidcn/mermaid"
 import { ZoomPan } from "@/components/mermaidcn/zoom-pan"
 
 export function ZoomableDiagram() {
+  const [svgOutput, setSvgOutput] = React.useState("")
+
+  const imageSrc = React.useMemo(() => {
+    if (!svgOutput) return ""
+    const bytes = new TextEncoder().encode(svgOutput)
+    const binString = Array.from(bytes, (byte) => String.fromCharCode(byte)).join("")
+    return \`data:image/svg+xml;base64,\${btoa(binString)}\`
+  }, [svgOutput])
+
   return (
     <ZoomPan
+      imageSrc={imageSrc}
       className="h-[400px]"
       controls={({ zoomIn, zoomOut, resetZoom, scalePercent }) => (
         <div className="flex items-center gap-2 p-2">
@@ -159,7 +226,10 @@ export function ZoomableDiagram() {
         </div>
       )}
     >
-      <Mermaid chart="classDiagram\\n  class Animal" />
+      <Mermaid 
+        chart="classDiagram\\n  class Animal" 
+        onSuccess={setSvgOutput}
+      />
     </ZoomPan>
   )
 }`;
@@ -176,6 +246,32 @@ export function CustomZoom() {
       <button onClick={zoomOut}>Zoom Out</button>
       <button onClick={resetZoom}>Reset</button>
     </div>
+  )
+}`;
+
+const PLAYGROUND_EXAMPLE = `import { MermaidPlayground } from "@/components/mermaidcn/mermaid-playground"
+
+export function Editor() {
+  return (
+    <MermaidPlayground 
+      defaultValue="graph TD; A-->B;" 
+      className="h-[500px]" 
+    />
+  )
+}`;
+
+const PREVIEW_EXAMPLE = `import { MermaidPreview } from "@/components/mermaidcn/mermaid-preview"
+
+export function CustomPreview() {
+  const [svg, setSvg] = React.useState("")
+  
+  return (
+    <MermaidPreview
+      chart="graph TD; A-->B;"
+      config={{ theme: 'dark' }}
+      svgOutput={svg}
+      onSvgOutputChange={setSvg}
+    />
   )
 }`;
 
@@ -341,9 +437,11 @@ export function DocsPage() {
                 </Badge>
               </div>
               <p className="text-muted-foreground mt-2 text-sm leading-relaxed">
-                Generic zoom and pan wrapper. Wraps any React content in a
-                scrollable, pannable, pinch-zoomable canvas. Not coupled to
-                Mermaid -- use it with images, maps, or any content.
+                High-performance canvas-based zoom and pan engine. Optimized for
+                large images and complex diagrams with smooth interpolation and
+                high-DPI support. For Mermaid diagrams, using{" "}
+                {"<MermaidPreview />"} is recommended as it handles the
+                SVG-to-Canvas conversion automatically.
               </p>
             </div>
 
@@ -369,70 +467,7 @@ export function DocsPage() {
                 label="Zoom & Pan (scroll to zoom, drag to pan)"
                 code={ZOOM_EXAMPLE}
               >
-                <ZoomPan
-                  className="h-[350px]"
-                  controls={({ zoomIn, zoomOut, resetZoom, scalePercent }) => (
-                    <div className="border-border flex items-center gap-1 border-b px-3 py-1.5">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7"
-                        onClick={zoomOut}
-                      >
-                        <ZoomOutIcon className="h-3.5 w-3.5" />
-                        <span className="sr-only">Zoom out</span>
-                      </Button>
-                      <button
-                        onClick={resetZoom}
-                        className="text-muted-foreground hover:text-foreground min-w-12 px-1 text-center text-xs font-medium tabular-nums transition-colors"
-                      >
-                        {scalePercent}%
-                      </button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7"
-                        onClick={zoomIn}
-                      >
-                        <ZoomInIcon className="h-3.5 w-3.5" />
-                        <span className="sr-only">Zoom in</span>
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7"
-                        onClick={resetZoom}
-                      >
-                        <LocateFixedIcon className="h-3.5 w-3.5" />
-                        <span className="sr-only">Reset zoom</span>
-                      </Button>
-                    </div>
-                  )}
-                >
-                  <Mermaid
-                    chart={`classDiagram
-    class User {
-        +String name
-        +String email
-        +login()
-        +logout()
-    }
-    class Post {
-        +String title
-        +String content
-        +publish()
-    }
-    class Comment {
-        +String body
-        +Date createdAt
-        +edit()
-    }
-    User "1" --> "*" Post : writes
-    Post "1" --> "*" Comment : has
-    User "1" --> "*" Comment : makes`}
-                    config={{ theme: "default" }}
-                  />
-                </ZoomPan>
+                <ZoomPanDemo />
               </LivePreview>
             </div>
 
@@ -449,6 +484,82 @@ export function DocsPage() {
                 component.
               </p>
               <CodeBlock code={HOOK_EXAMPLE} filename="custom-zoom.tsx" />
+            </div>
+          </div>
+        </section>
+
+        <Separator />
+
+        {/* MermaidPlayground Component */}
+        <section className="py-16">
+          <div className="flex flex-col gap-8">
+            <div>
+              <div className="flex items-center gap-3">
+                <h2 className="text-foreground text-2xl font-bold tracking-tight">
+                  {"<MermaidPlayground />"}
+                </h2>
+                <Badge variant="outline" className="font-mono text-[10px]">
+                  component
+                </Badge>
+              </div>
+              <p className="text-muted-foreground mt-2 text-sm leading-relaxed">
+                The full batteries-included playground environment. Combines the
+                editor, controls, and preview into a single cohesive interface.
+              </p>
+            </div>
+
+            <div>
+              <h3 className="text-foreground mb-3 text-sm font-semibold">
+                Props
+              </h3>
+              <PropsTable props={playgroundProps} />
+            </div>
+
+            <div>
+              <h3 className="text-foreground mb-3 text-sm font-semibold">
+                Usage
+              </h3>
+              <CodeBlock
+                code={PLAYGROUND_EXAMPLE}
+                filename="my-playground.tsx"
+              />
+            </div>
+          </div>
+        </section>
+
+        <Separator />
+
+        {/* MermaidPreview Component */}
+        <section className="py-16">
+          <div className="flex flex-col gap-8">
+            <div>
+              <div className="flex items-center gap-3">
+                <h2 className="text-foreground text-2xl font-bold tracking-tight">
+                  {"<MermaidPreview />"}
+                </h2>
+                <Badge variant="outline" className="font-mono text-[10px]">
+                  component
+                </Badge>
+              </div>
+              <p className="text-muted-foreground mt-2 text-sm leading-relaxed">
+                A standalone component that wraps the Renderer and ZoomPan
+                features along with export controls (SVG, PNG, Copy). This is
+                the component used within the Playground.
+              </p>
+            </div>
+
+            <div>
+              <h3 className="text-foreground mb-3 text-sm font-semibold">
+                Props
+              </h3>
+              <PropsTable props={previewProps} />
+            </div>
+
+            <div>
+              <h3 className="text-foreground mb-3 text-sm font-semibold">
+                Usage
+              </h3>
+              <CodeBlock code={PREVIEW_EXAMPLE} filename="custom-preview.tsx" />
             </div>
           </div>
         </section>
@@ -480,6 +591,12 @@ export function DocsPage() {
                   ZoomPan Wrapper
                 </h3>
                 <InstallCommand command="npx shadcn@latest add https://mermaidcn.vercel.app/r/zoom-pan.json" />
+              </div>
+              <div>
+                <h3 className="text-foreground mb-2 text-sm font-semibold">
+                  Mermaid Playground
+                </h3>
+                <InstallCommand command="npx shadcn@latest add https://mermaidcn.vercel.app/r/mermaid-playground.json" />
               </div>
             </div>
 
@@ -535,5 +652,94 @@ export function DocsPage() {
         </div>
       </footer>
     </div>
+  );
+}
+
+function ZoomPanDemo() {
+  const [svgOutput, setSvgOutput] = React.useState<string>("");
+  const { resolvedTheme } = useTheme();
+
+  const imageSrc = React.useMemo(() => {
+    if (!svgOutput) return "";
+
+    const bytes = new TextEncoder().encode(svgOutput);
+    const binString = Array.from(bytes, (byte) =>
+      String.fromCharCode(byte),
+    ).join("");
+    const base64 = btoa(binString);
+
+    return `data:image/svg+xml;base64,${base64}`;
+  }, [svgOutput]);
+
+  return (
+    <ZoomPan
+      imageSrc={imageSrc}
+      className="h-[350px] w-full"
+      controls={({ zoomIn, zoomOut, resetZoom, scalePercent }) => (
+        <div className="border-border flex items-center gap-1 border-b px-3 py-1.5">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            onClick={zoomOut}
+          >
+            <ZoomOutIcon className="h-3.5 w-3.5" />
+            <span className="sr-only">Zoom out</span>
+          </Button>
+          <button
+            onClick={resetZoom}
+            className="text-muted-foreground hover:text-foreground min-w-12 px-1 text-center text-xs font-medium tabular-nums transition-colors"
+          >
+            {scalePercent}%
+          </button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            onClick={zoomIn}
+          >
+            <ZoomInIcon className="h-3.5 w-3.5" />
+            <span className="sr-only">Zoom in</span>
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            onClick={resetZoom}
+          >
+            <LocateFixedIcon className="h-3.5 w-3.5" />
+            <span className="sr-only">Reset zoom</span>
+          </Button>
+        </div>
+      )}
+    >
+      <Mermaid
+        config={{
+          darkMode: resolvedTheme === "dark",
+        }}
+        chart={`classDiagram
+            class User {
+                +String name
+                +String email
+                +login()
+                +logout()
+            }
+            class Post {
+                +String title
+                +String content
+                +publish()
+            }
+            class Comment {
+                +String body
+                +Date createdAt
+                +edit()
+            }
+            User "1" --> "*" Post : writes
+            Post "1" --> "*" Comment : has
+            User "1" --> "*" Comment : makes`}
+        onSuccess={setSvgOutput}
+        className="w-full h-full"
+      />
+    </ZoomPan>
   );
 }
