@@ -154,9 +154,9 @@ export function MermaidPlayground({
       </div>
 
       {/* Main Content: Editor + Preview */}
-      <div className="flex min-h-[500px] flex-col md:flex-row">
+      <div className="flex min-h-[500px] flex-col md:h-[600px] md:flex-row">
         {/* Editor */}
-        <div className="border-border min-h-[300px] w-full border-b md:h-auto md:w-1/2 md:border-b-0 md:border-r">
+        <div className="border-border min-h-[300px] w-full border-b md:h-full md:w-1/2 md:border-b-0 md:border-r">
           <MermaidEditor
             value={code}
             onChange={setCode}
@@ -165,7 +165,7 @@ export function MermaidPlayground({
         </div>
 
         {/* Preview */}
-        <div className="min-h-[300px] w-full bg-muted/5 md:h-auto md:w-1/2">
+        <div className="min-h-[300px] w-full bg-muted/5 md:h-full md:w-1/2">
           <MermaidPreview
             chart={code}
             config={config}

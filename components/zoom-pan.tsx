@@ -4,20 +4,15 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 import { Loader2 } from "lucide-react";
 
-export interface ZoomPanState {
-  scale: number;
-  translateX: number;
-  translateY: number;
-  isImmediate: boolean;
-}
-
 export interface ZoomPanProps {
-  children: React.ReactNode;
-  className?: string;
+  imageSrc?: string;
+  children?: React.ReactNode;
   minScale?: number;
   maxScale?: number;
   initialScale?: number;
   zoomStep?: number;
+  className?: string;
+  onLoad?: () => void;
   controls?: (api: {
     zoomIn: () => void;
     zoomOut: () => void;
@@ -30,548 +25,225 @@ export interface ZoomPanProps {
 }
 
 export function ZoomPan({
+  imageSrc,
   children,
-  className,
   minScale = 0.1,
   maxScale = 5,
   initialScale = 1,
   zoomStep = 0.1,
+  className = "",
+  onLoad,
   controls,
   isLoading = false,
   loadingFallback,
 }: ZoomPanProps) {
+  const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const containerRef = React.useRef<HTMLDivElement>(null);
-  const contentRef = React.useRef<HTMLDivElement>(null);
+  const imageRef = React.useRef<HTMLImageElement | null>(null);
 
-  // -- State --
-  // We keep React state for the "committed" values (for UI controls).
-  // During gestures, we bypass this and update the DOM directly.
-  const [zoomPan, setZoomPan] = React.useState<ZoomPanState>({
-    scale: initialScale,
-    translateX: 0,
-    translateY: 0,
-    isImmediate: false,
-  });
+  // Transform refs
+  const currentRef = React.useRef({ x: 0, y: 0, scale: initialScale });
+  const targetRef = React.useRef({ x: 0, y: 0, scale: initialScale });
 
-  // -- Refs for High-Perf Updates --
-  const currentRef = React.useRef({
-    scale: initialScale,
-    x: 0,
-    y: 0,
-  });
+  // UI state for controls
+  const [scalePercent, setScalePercent] = React.useState(
+    Math.round(initialScale * 100),
+  );
 
-  const targetRef = React.useRef({
-    scale: initialScale,
-    x: 0,
-    y: 0,
-  });
-
+  // Interaction refs
   const isDragging = React.useRef(false);
   const isPinching = React.useRef(false);
   const panStartRef = React.useRef({ x: 0, y: 0 });
   const targetStartRef = React.useRef({ x: 0, y: 0 });
 
-  // Momentum & Physics
-  const velocityRef = React.useRef({ x: 0, y: 0 });
-  const lastTimeRef = React.useRef(0);
-  // Track last frame time for Delta Time calculation
-  const lastFrameTimeRef = React.useRef(0);
-
+  // Animation/Raf ref
   const rafRef = React.useRef<number | null>(null);
+  const hasCentered = React.useRef(false);
 
-  // Touch
+  // Touch refs
   const touchStartRef = React.useRef<{
-    touches: { x: number; y: number }[];
-    distance: number;
-    center: { x: number; y: number };
-    scale: number;
+    touches: Array<{ x: number; y: number }>;
     translateX: number;
     translateY: number;
+    scale: number;
+    distance: number;
+    center: { x: number; y: number };
   } | null>(null);
 
-  // -- Physics / Animation Loop --
-
-  // Sync DOM directly from currentRef
-  const updateDom = React.useCallback((isImmediate = true) => {
-    if (!contentRef.current) return;
-    const { x, y, scale } = currentRef.current;
-
-    // Use translate3d for GPU acceleration
-    contentRef.current.style.transform = `translate3d(${x}px, ${y}px, 0) scale(${scale})`;
-    contentRef.current.style.transition = isImmediate
-      ? "none"
-      : "transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1)";
-  }, []);
-
-  // Sync CurrentRef -> State (For UI controls)
-  const commitToState = React.useCallback(() => {
-    setZoomPan((prev) => ({
-      scale: currentRef.current.scale,
-      translateX: currentRef.current.x,
-      translateY: currentRef.current.y,
-      isImmediate: prev.isImmediate,
-    }));
-  }, []);
-
-  const startAnimation = React.useCallback(() => {
-    if (rafRef.current) return;
-
-    lastFrameTimeRef.current = performance.now();
-
-    const step = (timestamp: number) => {
-      const dt = timestamp - lastFrameTimeRef.current;
-      lastFrameTimeRef.current = timestamp;
-
-      // Skip huge time jumps (tab inactive)
-      if (dt > 100) {
-        rafRef.current = requestAnimationFrame(step);
-        return;
-      }
-
-      // Time scale factor (normalized to ~60fps)
-      const timeScale = dt / 16.667;
-
-      const target = targetRef.current;
-      const current = currentRef.current;
-      const velocity = velocityRef.current;
-
-      // 1. Apply Momentum if not interacting
-      if (!isDragging.current && !isPinching.current) {
-        // Friction adjusted for time
-        // 0.95 is smoother than 0.92
-        const friction = Math.pow(0.95, timeScale);
-
-        if (Math.abs(velocity.x) > 0.05 || Math.abs(velocity.y) > 0.05) {
-          target.x += velocity.x * timeScale;
-          target.y += velocity.y * timeScale;
-
-          velocity.x *= friction;
-          velocity.y *= friction;
-        } else {
-          velocity.x = 0;
-          velocity.y = 0;
-        }
-      }
-
-      // 2. Smooth Interpolation (Lerp)
-      // Adjusted lerp factors for time-independence
-      const panFactor = 1 - Math.pow(1 - 0.12, timeScale);
-      const zoomFactor = 1 - Math.pow(1 - 0.12, timeScale);
-
-      const dx = target.x - current.x;
-      const dy = target.y - current.y;
-      const ds = target.scale - current.scale;
-
-      current.x += dx * panFactor;
-      current.y += dy * panFactor;
-      current.scale += ds * zoomFactor;
-
-      updateDom(true);
-
-      // 3. Stop Condition
-      const isStillMoving =
-        Math.abs(dx) > 0.1 ||
-        Math.abs(dy) > 0.1 ||
-        Math.abs(ds) > 0.0001 || // tighter zoom tolerance
-        Math.abs(velocity.x) > 0.1 ||
-        Math.abs(velocity.y) > 0.1;
-
-      if (isStillMoving || isDragging.current || isPinching.current) {
-        rafRef.current = requestAnimationFrame(step);
-      } else {
-        rafRef.current = null;
-        // Snap to target to prevent micro-drifting
-        current.x = target.x;
-        current.y = target.y;
-        current.scale = target.scale;
-        updateDom(true);
-        commitToState();
-      }
-    };
-
-    rafRef.current = requestAnimationFrame(step);
-  }, [updateDom, commitToState]);
-
-  React.useEffect(() => {
-    // Only update refs from state if we aren't animating
-    // This prevents state updates from "fighting" the physics loop
-    if (!rafRef.current) {
-      targetRef.current = {
-        scale: zoomPan.scale,
-        x: zoomPan.translateX,
-        y: zoomPan.translateY,
-      };
-      // If purely state-driven (buttons), sync current immediately
-      if (!zoomPan.isImmediate) {
-        currentRef.current = { ...targetRef.current };
-        updateDom(false);
-      }
-    } else {
-      // If animating, ensure target matches state only if it was a button press
-      if (!zoomPan.isImmediate) {
-        targetRef.current = {
-          scale: zoomPan.scale,
-          x: zoomPan.translateX,
-          y: zoomPan.translateY,
-        };
-      }
-    }
-  }, [zoomPan, updateDom]);
-
-  // -- Zoom Controls (Button based) --
-
-  const getContainerCenter = React.useCallback(() => {
-    if (!containerRef.current) return { x: 0, y: 0 };
-    const rect = containerRef.current.getBoundingClientRect();
-    return { x: rect.width / 2, y: rect.height / 2 };
-  }, []);
-
-  const applyZoomToPoint = React.useCallback(
-    (delta: number, point: { x: number; y: number }) => {
-      const prevScale = targetRef.current.scale; // Use target for calculations
-      const prevX = targetRef.current.x;
-      const prevY = targetRef.current.y;
-
-      const newScale = Math.min(
-        maxScale,
-        Math.max(minScale, prevScale + delta),
-      );
-      const ratio = newScale / prevScale;
-
-      const newX = point.x - (point.x - prevX) * ratio;
-      const newY = point.y - (point.y - prevY) * ratio;
-
-      // Update Target Ref immediately for the loop
-      targetRef.current = {
-        scale: newScale,
-        x: newX,
-        y: newY,
-      };
-
-      // Trigger state update to handle UI but keep isImmediate=false for CSS transition
-      // We manually start animation to smooth the ref values
-      startAnimation();
-
-      setZoomPan({
-        scale: newScale,
-        translateX: newX,
-        translateY: newY,
-        isImmediate: false,
-      });
-    },
-    [maxScale, minScale, startAnimation],
-  );
-
-  const zoomIn = React.useCallback(() => {
-    applyZoomToPoint(zoomStep, getContainerCenter());
-  }, [zoomStep, applyZoomToPoint, getContainerCenter]);
-
-  const zoomOut = React.useCallback(() => {
-    applyZoomToPoint(-zoomStep, getContainerCenter());
-  }, [zoomStep, applyZoomToPoint, getContainerCenter]);
-
-  const resetZoom = React.useCallback(() => {
-    targetRef.current = { scale: initialScale, x: 0, y: 0 };
-    setZoomPan({
-      scale: initialScale,
-      translateX: 0,
-      translateY: 0,
-      isImmediate: false,
-    });
-    startAnimation();
-  }, [initialScale, startAnimation]);
-
-  const centerView = React.useCallback(() => {
-    const container = containerRef.current;
-    const content = contentRef.current;
-    if (!container || !content) return;
-
-    const contentRect = content.getBoundingClientRect();
-    // Use current physical scale
-    const currentScale = currentRef.current.scale;
-
-    // Calculate unscaled dimensions
-    const contentWidth = contentRect.width / currentScale;
-    const contentHeight = contentRect.height / currentScale;
-
-    const containerWidth = container.clientWidth;
-    const containerHeight = container.clientHeight;
-
-    if (contentWidth === 0 || contentHeight === 0) return;
-
-    const padding = 40;
-    const availableWidth = containerWidth - padding;
-    const availableHeight = containerHeight - padding;
-
-    const scaleX = availableWidth / contentWidth;
-    const scaleY = availableHeight / contentHeight;
-    const fitScale = Math.min(
-      maxScale,
-      Math.max(minScale, Math.min(scaleX, scaleY)),
-    );
-
-    const newX = (containerWidth - contentWidth * fitScale) / 2;
-    const newY = (containerHeight - contentHeight * fitScale) / 2;
-
-    targetRef.current = { scale: fitScale, x: newX, y: newY };
-
-    setZoomPan({
-      scale: fitScale,
-      translateX: newX,
-      translateY: newY,
-      isImmediate: false,
-    });
-    startAnimation();
-  }, [maxScale, minScale, startAnimation]);
-
-  // -- Mouse Panning --
-
-  React.useEffect(() => {
-    const handleWindowMouseMove = (e: MouseEvent) => {
-      if (!isDragging.current || isPinching.current) return;
-      e.preventDefault();
-
-      const now = performance.now();
-      const dt = now - lastTimeRef.current;
-
-      const dx = e.clientX - panStartRef.current.x;
-      const dy = e.clientY - panStartRef.current.y;
-
-      // Velocity Calculation (Pixels per ms)
-      if (dt > 0) {
-        // We need instantaneous velocity
-        const moveX =
-          e.clientX - (lastInteractionTimeRef.current.x || e.clientX);
-        const moveY =
-          e.clientY - (lastInteractionTimeRef.current.y || e.clientY);
-
-        // Simple smoothing for velocity to avoid spikes
-        velocityRef.current = {
-          x: moveX * 0.5, // dampening input velocity slightly
-          y: moveY * 0.5,
-        };
-      }
-
-      targetRef.current.x = targetStartRef.current.x + dx;
-      targetRef.current.y = targetStartRef.current.y + dy;
-
-      lastTimeRef.current = now;
-      lastInteractionTimeRef.current = { x: e.clientX, y: e.clientY };
-      startAnimation();
-    };
-
-    const handleWindowMouseUp = () => {
-      if (isDragging.current) {
-        isDragging.current = false;
-        // Loop will continue to run to handle momentum
-      }
-    };
-
-    window.addEventListener("mousemove", handleWindowMouseMove);
-    window.addEventListener("mouseup", handleWindowMouseUp);
-    return () => {
-      window.removeEventListener("mousemove", handleWindowMouseMove);
-      window.removeEventListener("mouseup", handleWindowMouseUp);
-    };
-  }, [startAnimation]);
-
-  const lastInteractionTimeRef = React.useRef({ x: 0, y: 0 });
-
-  const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (isLoading || (e.button !== 0 && e.button !== 1)) return;
-
-    e.preventDefault();
-    isDragging.current = true;
-
-    // Kill existing momentum
-    velocityRef.current = { x: 0, y: 0 };
-
-    panStartRef.current = { x: e.clientX, y: e.clientY };
-    targetStartRef.current = {
-      x: targetRef.current.x,
-      y: targetRef.current.y,
-    };
-
-    lastTimeRef.current = performance.now();
-    // eslint-disable-next-line react-hooks/immutability
-    lastInteractionTimeRef.current = { x: e.clientX, y: e.clientY };
-
-    startAnimation();
-  };
-
-  // ... Touch logic remains mostly same, just benefits from better loop ...
-  const getTouchDistance = (touches: TouchList) => {
-    if (touches.length < 2) return 0;
+  const getTouchDistance = (touches: React.TouchList | TouchList) => {
     const dx = touches[0].clientX - touches[1].clientX;
     const dy = touches[0].clientY - touches[1].clientY;
     return Math.sqrt(dx * dx + dy * dy);
   };
 
-  const getTouchCenter = (touches: TouchList) => {
-    if (touches.length < 2) return { x: 0, y: 0 };
+  const getTouchCenter = (touches: React.TouchList | TouchList) => {
     return {
       x: (touches[0].clientX + touches[1].clientX) / 2,
       y: (touches[0].clientY + touches[1].clientY) / 2,
     };
   };
 
-  React.useEffect(() => {
-    const container = containerRef.current;
-    if (!container || isLoading) return;
+  // Render canvas
+  const render = React.useCallback(() => {
+    const canvas = canvasRef.current;
+    const image = imageRef.current;
+    if (!canvas || !image) return;
 
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
 
-      const rect = container.getBoundingClientRect();
-      const mouseX = e.clientX - rect.left;
-      const mouseY = e.clientY - rect.top;
+    const { x, y, scale } = currentRef.current;
+    const dpr =
+      typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
 
-      let delta = e.deltaY;
-      // Normalization for different browsers/devices
-      if (e.deltaMode === 1) delta *= 40;
-      if (e.deltaMode === 2) delta *= 800;
+    // Clear canvas
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      const ZOOM_SENSITIVITY = 0.0015; // Slightly reduced for control
-      const scaleFactor = Math.exp(-delta * ZOOM_SENSITIVITY);
+    ctx.save();
+    ctx.scale(dpr, dpr);
+    ctx.translate(x, y);
+    ctx.scale(scale, scale);
 
+    // Draw image
+    ctx.drawImage(image, 0, 0, image.width, image.height);
+
+    ctx.restore();
+  }, []);
+
+  // Mode 1: Snappy Update (Instant)
+  // Used for drag, pinch, and wheel to ensure 1:1 input response
+  const updateImmediate = React.useCallback(() => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+
+    rafRef.current = requestAnimationFrame(() => {
+      // Direct 1:1 sync with target
+      currentRef.current.x = targetRef.current.x;
+      currentRef.current.y = targetRef.current.y;
+      currentRef.current.scale = targetRef.current.scale;
+
+      render();
+
+      const newPercent = Math.round(currentRef.current.scale * 100);
+      setScalePercent((prev) => {
+        if (prev !== newPercent) return newPercent;
+        return prev;
+      });
+
+      rafRef.current = null;
+    });
+  }, [render]);
+
+  // Mode 2: Smooth Update (Interpolated)
+  // Used for buttons (zoom in/out, reset, center) to provide a nice feel
+  const updateSmooth = React.useCallback(() => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+
+    const loop = () => {
       const target = targetRef.current;
+      const current = currentRef.current;
+
+      const lerp = 0.3; // Smoothing factor (higher = faster/snappier)
+      const dist_x = target.x - current.x;
+      const dist_y = target.y - current.y;
+      const dist_s = target.scale - current.scale;
+
+      // Stop condition: close enough to target
+      if (
+        Math.abs(dist_x) < 0.5 &&
+        Math.abs(dist_y) < 0.5 &&
+        Math.abs(dist_s) < 0.001
+      ) {
+        current.x = target.x;
+        current.y = target.y;
+        current.scale = target.scale;
+        render();
+        setScalePercent(Math.round(current.scale * 100));
+        rafRef.current = null;
+        return;
+      }
+
+      // Interpolate
+      current.x += dist_x * lerp;
+      current.y += dist_y * lerp;
+      current.scale += dist_s * lerp;
+
+      render();
+      setScalePercent(Math.round(current.scale * 100));
+      rafRef.current = requestAnimationFrame(loop);
+    };
+
+    rafRef.current = requestAnimationFrame(loop);
+  }, [render]);
+
+  // Clean up RAF on unmount
+  React.useEffect(() => {
+    return () => {
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+      }
+    };
+  }, []);
+
+  // Logic functions for API
+  const applyZoom = React.useCallback(
+    (delta: number) => {
+      const target = targetRef.current;
+      if (!containerRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      const centerX = rect.width / 2;
+      const centerY = rect.height / 2;
+
       const newScale = Math.min(
         maxScale,
-        Math.max(minScale, target.scale * scaleFactor),
+        Math.max(minScale, target.scale + delta),
       );
-
       const ratio = newScale / target.scale;
-      target.x = mouseX - (mouseX - target.x) * ratio;
-      target.y = mouseY - (mouseY - target.y) * ratio;
+
+      target.x = centerX - (centerX - target.x) * ratio;
+      target.y = centerY - (centerY - target.y) * ratio;
       target.scale = newScale;
 
-      startAnimation();
-    };
+      updateSmooth();
+    },
+    [maxScale, minScale, updateSmooth],
+  );
 
-    const onTouchStart = (e: TouchEvent) => {
-      const { x, y, scale } = targetRef.current;
-      velocityRef.current = { x: 0, y: 0 };
+  const zoomIn = React.useCallback(
+    () => applyZoom(zoomStep),
+    [applyZoom, zoomStep],
+  );
+  const zoomOut = React.useCallback(
+    () => applyZoom(-zoomStep),
+    [applyZoom, zoomStep],
+  );
 
-      if (e.touches.length === 1) {
-        isDragging.current = true;
-        isPinching.current = false;
-        touchStartRef.current = {
-          touches: [{ x: e.touches[0].clientX, y: e.touches[0].clientY }],
-          distance: 0,
-          center: { x: 0, y: 0 },
-          scale,
-          translateX: x,
-          translateY: y,
-        };
-      } else if (e.touches.length === 2) {
-        isDragging.current = false;
-        isPinching.current = true;
-        const center = getTouchCenter(e.touches);
-        touchStartRef.current = {
-          touches: [
-            { x: e.touches[0].clientX, y: e.touches[0].clientY },
-            { x: e.touches[1].clientX, y: e.touches[1].clientY },
-          ],
-          distance: getTouchDistance(e.touches),
-          center,
-          scale,
-          translateX: x,
-          translateY: y,
-        };
-      }
-      lastTimeRef.current = performance.now();
-      lastInteractionTimeRef.current = {
-        x: e.touches[0].clientX,
-        y: e.touches[0].clientY,
-      };
-      startAnimation();
-    };
+  const resetZoom = React.useCallback(() => {
+    targetRef.current = { x: 0, y: 0, scale: initialScale };
+    updateSmooth();
+  }, [initialScale, updateSmooth]);
 
-    const onTouchMove = (e: TouchEvent) => {
-      if (e.cancelable) e.preventDefault();
-      if (!touchStartRef.current) return;
+  // Shared calculation for centering without applying it yet
+  const getCenterTransform = React.useCallback(() => {
+    const canvas = canvasRef.current;
+    const image = imageRef.current;
+    if (!canvas || !image) return null;
 
-      const now = performance.now();
-      // const dt = now - lastTimeRef.current; // unused locally, logic relies on lastInteraction
+    const scaleX = canvas.clientWidth / image.width;
+    const scaleY = canvas.clientHeight / image.height;
+    const scale = Math.min(scaleX, scaleY) * 0.9;
 
-      if (
-        e.touches.length === 1 &&
-        touchStartRef.current.touches.length === 1
-      ) {
-        const dx = e.touches[0].clientX - touchStartRef.current.touches[0].x;
-        const dy = e.touches[0].clientY - touchStartRef.current.touches[0].y;
+    const x = (canvas.clientWidth - image.width * scale) / 2;
+    const y = (canvas.clientHeight - image.height * scale) / 2;
 
-        // Velocity for momentum on release
-        const moveX =
-          e.touches[0].clientX - (lastInteractionTimeRef.current.x || 0);
-        const moveY =
-          e.touches[0].clientY - (lastInteractionTimeRef.current.y || 0);
+    return { x, y, scale };
+  }, []);
 
-        velocityRef.current = {
-          x: moveX * 0.5,
-          y: moveY * 0.5,
-        };
-
-        targetRef.current.x = touchStartRef.current.translateX + dx;
-        targetRef.current.y = touchStartRef.current.translateY + dy;
-
-        lastInteractionTimeRef.current = {
-          x: e.touches[0].clientX,
-          y: e.touches[0].clientY,
-        };
-      }
-      // Pinch
-      else if (e.touches.length === 2 && touchStartRef.current.distance > 0) {
-        const newDist = getTouchDistance(e.touches);
-        const newCenter = getTouchCenter(e.touches);
-        const rect = container.getBoundingClientRect();
-
-        const scaleRatio = newDist / touchStartRef.current.distance;
-        const newScale = Math.min(
-          maxScale,
-          Math.max(minScale, touchStartRef.current.scale * scaleRatio),
-        );
-
-        const oldScale = touchStartRef.current.scale;
-        const oldX = touchStartRef.current.translateX;
-        const oldY = touchStartRef.current.translateY;
-
-        const oldCenterRelX = touchStartRef.current.center.x - rect.left;
-        const oldCenterRelY = touchStartRef.current.center.y - rect.top;
-        const newCenterRelX = newCenter.x - rect.left;
-        const newCenterRelY = newCenter.y - rect.top;
-
-        const contentX = (oldCenterRelX - oldX) / oldScale;
-        const contentY = (oldCenterRelY - oldY) / oldScale;
-
-        targetRef.current.scale = newScale;
-        targetRef.current.x = newCenterRelX - contentX * newScale;
-        targetRef.current.y = newCenterRelY - contentY * newScale;
-      }
-
-      lastTimeRef.current = now;
-    };
-
-    const onTouchEnd = () => {
-      isDragging.current = false;
-      isPinching.current = false;
-      touchStartRef.current = null;
-    };
-
-    container.addEventListener("wheel", onWheel, { passive: false });
-    container.addEventListener("touchstart", onTouchStart, { passive: false });
-    container.addEventListener("touchmove", onTouchMove, { passive: false });
-    container.addEventListener("touchend", onTouchEnd);
-    container.addEventListener("touchcancel", onTouchEnd);
-
-    return () => {
-      container.removeEventListener("wheel", onWheel);
-      container.removeEventListener("touchstart", onTouchStart);
-      container.removeEventListener("touchmove", onTouchMove);
-      container.removeEventListener("touchend", onTouchEnd);
-      container.removeEventListener("touchcancel", onTouchEnd);
-    };
-  }, [minScale, maxScale, isLoading, startAnimation]);
+  const centerView = React.useCallback(() => {
+    const center = getCenterTransform();
+    if (!center) return;
+    targetRef.current = center;
+    updateSmooth();
+  }, [getCenterTransform, updateSmooth]);
 
   const [api, setApi] = React.useState<{
     zoomIn: () => void;
@@ -581,39 +253,274 @@ export function ZoomPan({
     scalePercent: number;
   } | null>(null);
 
-  React.useLayoutEffect(() => {
+  React.useEffect(() => {
     setApi({
-      zoomIn: () => zoomIn(),
-      zoomOut: () => zoomOut(),
-      resetZoom: () => resetZoom(),
-      centerView: () => centerView(),
-      scalePercent: Math.round(zoomPan.scale * 100),
+      zoomIn,
+      zoomOut,
+      resetZoom,
+      centerView,
+      scalePercent,
     });
-  }, [zoomIn, zoomOut, resetZoom, centerView, zoomPan.scale]);
+  }, [zoomIn, zoomOut, resetZoom, centerView, scalePercent]);
+
+  // Mouse handlers
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    isDragging.current = true;
+
+    // Sync logic: grab exactly where we are, cancelling any smooth animation
+    targetRef.current = { ...currentRef.current };
+    panStartRef.current = { x: e.clientX, y: e.clientY };
+    targetStartRef.current = { ...targetRef.current };
+
+    updateImmediate();
+  };
+
+  // Setup non-passive wheel event listener
+  React.useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+
+      const rect = canvas.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+
+      let delta = e.deltaY;
+      if (e.deltaMode === 1) delta *= 40;
+      const ZOOM_SENSITIVITY = 0.0015;
+      const scaleFactor = Math.exp(-delta * ZOOM_SENSITIVITY);
+
+      const current = currentRef.current;
+      const target = targetRef.current;
+
+      const effectiveScale = Math.min(
+        maxScale,
+        Math.max(minScale, current.scale * scaleFactor),
+      );
+      const ratio = effectiveScale / current.scale;
+
+      target.x = mouseX - (mouseX - current.x) * ratio;
+      target.y = mouseY - (mouseY - current.y) * ratio;
+      target.scale = effectiveScale;
+
+      updateImmediate();
+    };
+
+    canvas.addEventListener("wheel", onWheel, { passive: false });
+
+    return () => {
+      canvas.removeEventListener("wheel", onWheel);
+    };
+  }, [maxScale, minScale, updateImmediate]);
+
+  // Window events for dragging
+  React.useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDragging.current) return;
+      const dx = e.clientX - panStartRef.current.x;
+      const dy = e.clientY - panStartRef.current.y;
+
+      targetRef.current.x = targetStartRef.current.x + dx;
+      targetRef.current.y = targetStartRef.current.y + dy;
+
+      updateImmediate();
+    };
+
+    const handleMouseUp = () => {
+      isDragging.current = false;
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [updateImmediate]);
+
+  // Touch handlers
+  const handleTouchStart = (e: React.TouchEvent) => {
+    // Sync current state to target to stop any smooth animation instantly
+    targetRef.current = { ...currentRef.current };
+
+    if (e.touches.length === 1) {
+      isDragging.current = true;
+      touchStartRef.current = {
+        touches: [{ x: e.touches[0].clientX, y: e.touches[0].clientY }],
+        translateX: currentRef.current.x,
+        translateY: currentRef.current.y,
+        scale: currentRef.current.scale,
+        distance: 0,
+        center: { x: 0, y: 0 },
+      };
+    } else if (e.touches.length === 2) {
+      isPinching.current = true;
+      isDragging.current = false;
+
+      touchStartRef.current = {
+        touches: [
+          { x: e.touches[0].clientX, y: e.touches[0].clientY },
+          { x: e.touches[1].clientX, y: e.touches[1].clientY },
+        ],
+        translateX: currentRef.current.x,
+        translateY: currentRef.current.y,
+        scale: currentRef.current.scale,
+        distance: getTouchDistance(e.touches),
+        center: getTouchCenter(e.touches),
+      };
+    }
+    updateImmediate();
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (e.cancelable) e.preventDefault();
+    if (!touchStartRef.current) return;
+
+    if (e.touches.length === 1 && isDragging.current) {
+      const dx = e.touches[0].clientX - touchStartRef.current.touches[0].x;
+      const dy = e.touches[0].clientY - touchStartRef.current.touches[0].y;
+
+      targetRef.current.x = touchStartRef.current.translateX + dx;
+      targetRef.current.y = touchStartRef.current.translateY + dy;
+    } else if (e.touches.length === 2) {
+      const newDist = getTouchDistance(e.touches);
+      const newCenter = getTouchCenter(e.touches);
+      const rect = canvasRef.current?.getBoundingClientRect() || {
+        left: 0,
+        top: 0,
+      };
+
+      const scaleRatio = newDist / touchStartRef.current.distance;
+      const newScale = Math.min(
+        maxScale,
+        Math.max(minScale, touchStartRef.current.scale * scaleRatio),
+      );
+
+      const oldScale = touchStartRef.current.scale;
+      const oldX = touchStartRef.current.translateX;
+
+      const oldCenterRelX = touchStartRef.current.center.x - rect.left;
+      const oldCenterRelY = touchStartRef.current.center.y - rect.top;
+
+      const contentX = (oldCenterRelX - oldX) / oldScale;
+      const contentY =
+        (oldCenterRelY - touchStartRef.current.translateY) / oldScale;
+
+      const newCenterRelX = newCenter.x - rect.left;
+      const newCenterRelY = newCenter.y - rect.top;
+
+      targetRef.current.scale = newScale;
+      targetRef.current.x = newCenterRelX - contentX * newScale;
+      targetRef.current.y = newCenterRelY - contentY * newScale;
+    }
+
+    updateImmediate();
+  };
+
+  // ResizeObserver
+  React.useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+
+      const { width, height } = entry.contentRect;
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+
+      const dpr =
+        typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+      canvas.width = width * dpr;
+      canvas.height = height * dpr;
+      canvas.style.width = `${width}px`;
+      canvas.style.height = `${height}px`;
+
+      // Perform initial centering if we haven't yet and we have a valid size
+      // and an image is already loaded.
+      if (!hasCentered.current && imageRef.current && width > 0 && height > 0) {
+        const center = getCenterTransform();
+        if (center) {
+          targetRef.current = center;
+          currentRef.current = center;
+          hasCentered.current = true;
+        }
+      }
+
+      render();
+    });
+
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [render, getCenterTransform]);
+
+  // Image loading logic
+  React.useEffect(() => {
+    if (!imageSrc) {
+      imageRef.current = null;
+      hasCentered.current = false;
+      render();
+      return;
+    }
+
+    const image = new Image();
+    image.crossOrigin = "anonymous";
+    image.onload = () => {
+      imageRef.current = image;
+
+      // Calculate center for initial display
+      // We manually implement "snap to center" here to avoid animation on load
+      const canvas = canvasRef.current;
+      if (canvas && canvas.clientWidth > 0 && canvas.clientHeight > 0) {
+        const scaleX = canvas.clientWidth / image.width;
+        const scaleY = canvas.clientHeight / image.height;
+        const scale = Math.min(scaleX, scaleY) * 0.9;
+
+        const x = (canvas.clientWidth - image.width * scale) / 2;
+        const y = (canvas.clientHeight - image.height * scale) / 2;
+
+        const center = { x, y, scale };
+        targetRef.current = center;
+        currentRef.current = center;
+        hasCentered.current = true;
+      }
+
+      render();
+      onLoad?.();
+    };
+    image.src = imageSrc;
+  }, [imageSrc, onLoad, render, getCenterTransform]);
 
   return (
-    <div className={cn("flex flex-col", className)}>
+    <div
+      ref={containerRef}
+      className={cn("flex flex-col min-h-0 h-full w-full", className)}
+    >
       {controls && api && controls(api)}
 
-      <div
-        ref={containerRef}
-        className="relative min-h-0 flex-1 cursor-grab overflow-hidden active:cursor-grabbing touch-none select-none"
-        onMouseDown={handleMouseDown}
-      >
-        <div
-          ref={contentRef}
-          style={{
-            transform: `translate3d(${zoomPan.translateX}px, ${zoomPan.translateY}px, 0) scale(${zoomPan.scale})`,
-            transformOrigin: "0 0",
-            willChange: "transform",
-            transition: zoomPan.isImmediate
-              ? "none"
-              : "transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1)",
+      <div className="relative flex-1 min-h-0 overflow-hidden cursor-grab active:cursor-grabbing touch-none select-none">
+        <canvas
+          ref={canvasRef}
+          onMouseDown={handleMouseDown}
+          // onWheel handled via useEffect with passive: false
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={() => {
+            isDragging.current = false;
+            isPinching.current = false;
           }}
-          className="inline-flex origin-top-left [&_svg]:max-w-full"
-        >
+          className="block w-full h-full touch-none"
+        />
+
+        <div className="absolute inset-0 pointer-events-none opacity-0 -z-50 overflow-hidden">
           {children}
         </div>
+
         {isLoading && (
           <div className="absolute inset-0 flex items-center justify-center bg-background/50 z-50">
             {loadingFallback || (
